@@ -31,6 +31,7 @@
 #include <mach/thread_status.h>
 #include <mach/exception.h>
 #include <mach/task.h>
+#include <mach/exc.h>
 #include <pthread.h>
 
 /* For MacOSX.  */
@@ -213,6 +214,12 @@ catch_exception_raise (mach_port_t exception_port,
            code_count > 1 ? code[1] : -1);
 #endif
 
+  /* Don't take responsibility for things like misaligned access */
+  if (code_count > 0 && code[0] != KERN_PROTECTION_FAILURE && code[0] != KERN_INVALID_ADDRESS) {
+    return KERN_FAILURE;
+  }
+
+
   /* See http://web.mit.edu/darwin/src/modules/xnu/osfmk/man/thread_get_state.html.  */
 #ifdef SIGSEGV_EXC_STATE_TYPE
   state_count = SIGSEGV_EXC_STATE_COUNT;
@@ -326,13 +333,9 @@ mach_exception_thread (void *arg)
           char data[1024];
         }
         msg;
+      __Request__exception_raise_t *typed_msg = (__Request__exception_raise_t *)&msg;
       /* Buffer for a reply message.  */
-      struct
-        {
-          mach_msg_header_t head;
-          char data[1024];
-        }
-        reply;
+      __Reply__exception_raise_t reply;
 
       mach_msg_return_t retval;
 
@@ -359,21 +362,37 @@ mach_exception_thread (void *arg)
       /* Handle the message: Call exc_server, which will call
          catch_exception_raise and produce a reply message.  */
 #ifdef DEBUG_EXCEPTION_HANDLING
-      fprintf (stderr, "Calling exc_server\n");
-#endif
-      exc_server (&msg.head, &reply.head);
-#ifdef DEBUG_EXCEPTION_HANDLING
-      fprintf (stderr, "Finished exc_server\n");
+      fprintf (stderr, "Calling catch_exception_raise\n");
 #endif
 
+      kern_return_t retcode = catch_exception_raise (our_exception_port,
+                             typed_msg->thread.name,
+                             typed_msg->task.name,
+                             typed_msg->exception,
+                             typed_msg->code,
+                             typed_msg->codeCnt);
+
+#ifdef DEBUG_EXCEPTION_HANDLING
+      fprintf (stderr, "Finished catch_exception_raise, result %d\n", retcode);
+#endif
+
+      memset(&reply, 0, sizeof(reply));
+      reply.Head.msgh_bits = MACH_MSGH_BITS(MACH_MSGH_BITS_REMOTE(msg.head.msgh_bits), 0);
+      reply.Head.msgh_local_port = MACH_PORT_NULL;
+      reply.Head.msgh_remote_port = msg.head.msgh_remote_port;
+      reply.Head.msgh_size = sizeof(reply);
+      reply.NDR = NDR_record;
+      reply.RetCode = retcode;
+      reply.Head.msgh_id = msg.head.msgh_id + 100;
+
       /* Send the reply.  */
-      if (mach_msg (&reply.head, MACH_SEND_MSG, reply.head.msgh_size,
+      retval = mach_msg (&reply.Head, MACH_SEND_MSG, reply.Head.msgh_size,
                     0, MACH_PORT_NULL,
-                    MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL)
-          != MACH_MSG_SUCCESS)
+                    MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+      if (retval != MACH_MSG_SUCCESS)
         {
 #ifdef DEBUG_EXCEPTION_HANDLING
-          fprintf (stderr, "mach_msg send failed\n");
+          fprintf (stderr, "mach_msg send failed with %d %s\n", retval, mach_error_string(retval));
 #endif
           abort ();
         }
@@ -489,7 +508,7 @@ sigsegv_leave_handler (void (*continuation) (void*, void*, void*),
           return 0;
         }
 
-#if defined __ppc64__ || defined __ppc__ || defined __x86_64__
+#if defined __ppc64__ || defined __ppc__ || defined __x86_64__ || defined __arm64__
       /* Store arguments in registers.  */
       SIGSEGV_INTEGER_ARGUMENT_1 (thread_state) = (unsigned long) cont_arg1;
       SIGSEGV_INTEGER_ARGUMENT_2 (thread_state) = (unsigned long) cont_arg2;
@@ -515,6 +534,15 @@ sigsegv_leave_handler (void (*continuation) (void*, void*, void*),
         new_esp -= sizeof (void *); *(void **)new_esp = cont_arg1;
         new_esp -= sizeof (void *); /* make room for (unused) return address slot */
         SIGSEGV_STACK_POINTER (thread_state) = new_esp;
+      }
+#elif defined __arm64__
+      /* Align stack.  */
+      {
+        unsigned long new_esp = SIGSEGV_STACK_POINTER (thread_state);
+        new_esp &= -16; /* align */
+        *(void **)new_esp = (void *)SIGSEGV_FRAME_POINTER (thread_state);
+        SIGSEGV_STACK_POINTER (thread_state) = new_esp;
+        SIGSEGV_FRAME_POINTER (thread_state) = new_esp;
       }
 #endif
       /* Point program counter to continuation to be executed.  */

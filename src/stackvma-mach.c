@@ -21,8 +21,6 @@
 #ifdef HAVE_UNISTD_H
 # include <unistd.h>
 #endif
-#include <libc.h>
-#include <nlist.h>
 #include <mach/mach.h>
 #ifndef NeXT
 #include <mach/machine/vm_param.h>
