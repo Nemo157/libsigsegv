@@ -508,7 +508,7 @@ sigsegv_leave_handler (void (*continuation) (void*, void*, void*),
           return 0;
         }
 
-#if defined __ppc64__ || defined __ppc__ || defined __x86_64__ || defined __arm64__
+#if defined __ppc64__ || defined __ppc__ || defined __x86_64__ || defined __arm__ || defined __arm64__
       /* Store arguments in registers.  */
       SIGSEGV_INTEGER_ARGUMENT_1 (thread_state) = (unsigned long) cont_arg1;
       SIGSEGV_INTEGER_ARGUMENT_2 (thread_state) = (unsigned long) cont_arg2;
@@ -543,6 +543,13 @@ sigsegv_leave_handler (void (*continuation) (void*, void*, void*),
         *(void **)new_esp = (void *)SIGSEGV_FRAME_POINTER (thread_state);
         SIGSEGV_STACK_POINTER (thread_state) = new_esp;
         SIGSEGV_FRAME_POINTER (thread_state) = new_esp;
+      }
+#elif defined __arm__
+      /* Align stack.  */
+      {
+        unsigned long new_esp = SIGSEGV_STACK_POINTER (thread_state);
+        new_esp &= -16; /* align */
+        SIGSEGV_STACK_POINTER (thread_state) = new_esp;
       }
 #endif
       /* Point program counter to continuation to be executed.  */

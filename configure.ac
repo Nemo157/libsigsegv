@@ -478,6 +478,8 @@ if test -z "$CFG_FAULT"; then
 #endif
 #if defined __arm64__
 #define sigsegv_thread_state_t arm_thread_state64_t
+#elif defined __arm__
+#define sigsegv_thread_state_t arm_thread_state_t
 #endif'
           FAULT_CONTEXT='sigsegv_thread_state_t'
           ;;
